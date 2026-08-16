@@ -1,0 +1,184 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+Tamil:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Agricultural Green Theme */
+    --background: 45 25% 97%;
+    --foreground: 150 30% 12%;
+
+    --card: 45 30% 99%;
+    --card-foreground: 150 30% 12%;
+
+    --popover: 45 30% 99%;
+    --popover-foreground: 150 30% 12%;
+
+    /* Deep Forest Green */
+    --primary: 152 45% 25%;
+    --primary-foreground: 45 30% 98%;
+
+    /* Warm Earth Brown */
+    --secondary: 30 35% 92%;
+    --secondary-foreground: 30 40% 25%;
+
+    /* Soft Sage */
+    --muted: 120 15% 92%;
+    --muted-foreground: 150 15% 40%;
+
+    /* Harvest Gold Accent */
+    --accent: 42 85% 55%;
+    --accent-foreground: 42 70% 15%;
+
+    --destructive: 0 65% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 120 15% 88%;
+    --input: 120 15% 88%;
+    --ring: 152 45% 35%;
+
+    --radius: 0.75rem;
+
+    /* Custom agricultural colors */
+    --soil-brown: 25 45% 35%;
+    --leaf-green: 140 50% 40%;
+    --water-blue: 200 70% 50%;
+    --sun-yellow: 45 90% 55%;
+    --crop-gold: 38 80% 50%;
+
+    /* Gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(152 45% 25%) 0%, hsl(140 40% 35%) 100%);
+    --gradient-accent: linear-gradient(135deg, hsl(42 85% 55%) 0%, hsl(38 80% 50%) 100%);
+    --gradient-earth: linear-gradient(180deg, hsl(30 35% 92%) 0%, hsl(25 30% 88%) 100%);
+    --gradient-hero: linear-gradient(135deg, hsl(152 45% 20%) 0%, hsl(140 50% 30%) 50%, hsl(130 45% 35%) 100%);
+
+    /* Shadows */
+    --shadow-soft: 0 4px 20px -4px hsl(150 30% 20% / 0.1);
+    --shadow-card: 0 8px 30px -8px hsl(150 30% 20% / 0.12);
+    --shadow-glow: 0 0 40px -10px hsl(152 45% 35% / 0.3);
+
+    --sidebar-background: 45 25% 97%;
+    --sidebar-foreground: 150 30% 12%;
+    --sidebar-primary: 152 45% 25%;
+    --sidebar-primary-foreground: 45 30% 98%;
+    --sidebar-accent: 120 15% 92%;
+    --sidebar-accent-foreground: 150 30% 12%;
+    --sidebar-border: 120 15% 88%;
+    --sidebar-ring: 152 45% 35%;
+  }
+
+  .dark {
+    --background: 150 30% 8%;
+    --foreground: 45 20% 95%;
+
+    --card: 150 25% 12%;
+    --card-foreground: 45 20% 95%;
+
+    --popover: 150 25% 12%;
+    --popover-foreground: 45 20% 95%;
+
+    --primary: 140 45% 50%;
+    --primary-foreground: 150 30% 8%;
+
+    --secondary: 150 20% 18%;
+    --secondary-foreground: 45 20% 90%;
+
+    --muted: 150 20% 18%;
+    --muted-foreground: 120 15% 60%;
+
+    --accent: 42 75% 50%;
+    --accent-foreground: 42 70% 10%;
+
+    --destructive: 0 60% 45%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 150 20% 20%;
+    --input: 150 20% 20%;
+    --ring: 140 45% 50%;
+
+    --sidebar-background: 150 25% 10%;
+    --sidebar-foreground: 45 20% 95%;
+    --sidebar-primary: 140 45% 50%;
+    --sidebar-primary-foreground: 150 30% 8%;
+    --sidebar-accent: 150 20% 18%;
+    --sidebar-accent-foreground: 45 20% 90%;
+    --sidebar-border: 150 20% 20%;
+    --sidebar-ring: 140 45% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Inter', 'Noto Sans Tamil', sans-serif;
+  }
+
+  .font-tamil {
+    font-family: 'Noto Sans Tamil', 'Inter', sans-serif;
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-card/80 backdrop-blur-md border border-border/50;
+    box-shadow: var(--shadow-card);
+  }
+
+  .gradient-primary {
+    background: var(--gradient-primary);
+  }
+
+  .gradient-accent {
+    background: var(--gradient-accent);
+  }
+
+  .gradient-hero {
+    background: var(--gradient-hero);
+  }
+
+  .gradient-earth {
+    background: var(--gradient-earth);
+  }
+
+  .text-gradient {
+    @apply bg-clip-text text-transparent;
+    background: var(--gradient-primary);
+  }
+
+  .shadow-glow {
+    box-shadow: var(--shadow-glow);
+  }
+
+  .animate-float {
+    animation: float 6s ease-in-out infinite;
+  }
+
+  .animate-pulse-slow {
+    animation: pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@layer utilities {
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}

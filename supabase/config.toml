@@ -1,0 +1,4 @@
+project_id = "aqgjdeefbxokhlzdqkrj"
+
+[functions.crop-chat]
+verify_jwt = false
