@@ -11,11 +11,22 @@ BASE_DIR = os.path.dirname(__file__)
 load_dotenv(os.path.join(BASE_DIR, '.env'))
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+
+@app.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,X-Requested-With'
+    response.headers['Access-Control-Allow-Methods'] = 'GET,PUT,POST,DELETE,OPTIONS'
+    return response
 
 @app.route('/')
 def home():
-    return "Crop Recommendation API is running!"
+    return jsonify({
+        "status": "online",
+        "service": "CropSmart TN API",
+        "endpoints": ["/predict", "/chat"]
+    })
 
 # Load the trained model and scaler
 try:
@@ -34,47 +45,182 @@ def get_gemini_client():
     global client
     if client is not None:
         return client
+
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         load_dotenv(os.path.join(BASE_DIR, '..', '.env'))
         api_key = os.getenv("GEMINI_API_KEY")
+
     if api_key:
+        # Sanitize whitespace and accidental enclosing quotes
+        api_key = api_key.strip().strip('"').strip("'")
+        # Check for empty or typical placeholder strings
+        placeholders = [
+            "your_gemini_api_key_here", "paste_your_real_api_key_here",
+            "your_api_key", "placeholder", "xxxx", "enter_api_key"
+        ]
+        if not api_key or any(p in api_key.lower() for p in placeholders) or api_key.startswith("<"):
+            print("[GEMINI] GEMINI_API_KEY is an unconfigured placeholder.")
+            return None
+
         try:
             client = genai.Client(api_key=api_key)
-            print("Gemini Client configured successfully.")
+            print("[GEMINI] Gemini Client configured successfully.")
             return client
         except Exception as e:
-            print(f"Error configuring Gemini: {e}")
+            print(f"[GEMINI] Error configuring Gemini Client: {e}")
             return None
     return None
 
 try:
     client = get_gemini_client()
 except Exception as e:
-    print(f"Initial Gemini config warning: {e}")
+    print(f"[GEMINI] Initial config warning: {e}")
     client = None
 
-@app.route('/chat', methods=['POST'])
+def generate_rule_based_fallback(query: str, recommendation: dict, language: str = 'en') -> str:
+    """
+    Deterministic agricultural advisory grounded in verified recommendation data.
+    Provides transparent, rule-based explanations when Gemini AI is unavailable.
+    """
+    is_tamil = language == 'ta'
+
+    if not isinstance(recommendation, dict) or not recommendation.get('crop'):
+        if is_tamil:
+            return (
+                "⚠️ [விதிமுறை அடிப்படையிலான தகவல்]: போதுமான பயிர் பரிந்துரை விவரங்கள் கிடைக்கவில்லை. "
+                "முழுமையான AI சேவைக்கு backend/.env கோப்பில் சரியான GEMINI_API_KEY உள்ளமைக்கவும்."
+            )
+        return (
+            "⚠️ [Rule-Based Advisory]: Insufficient crop recommendation context provided. "
+            "Please ensure soil analysis is completed, or configure a valid GEMINI_API_KEY in backend/.env for AI assistance."
+        )
+
+    crop_info = recommendation.get('crop', {})
+    crop_name = crop_info.get('nameTa' if is_tamil else 'nameEn', crop_info.get('nameEn', 'Selected Crop'))
+    confidence = recommendation.get('confidence', '90')
+    ph = recommendation.get('estimatedPH', '6.5')
+
+    weather = recommendation.get('weather', {})
+    temp = weather.get('temperature', '28')
+    rain = weather.get('rainfall', '100')
+
+    fert_note = recommendation.get('fertilizerNote', {})
+    fert_text = fert_note.get(language, fert_note.get('en', '')) if isinstance(fert_note, dict) else str(fert_note)
+
+    risk_note = recommendation.get('riskNote', {})
+    risk_text = risk_note.get(language, risk_note.get('en', '')) if isinstance(risk_note, dict) else str(risk_note)
+
+    price_curr = recommendation.get('currentPrice', {})
+    price_harv = recommendation.get('harvestPrice', {})
+    water_req = recommendation.get('waterRequirement', 'irrigationRequired')
+
+    q_lower = query.lower()
+    is_fert = any(k in q_lower for k in ['fertilizer', 'உரம்', 'dosage', 'nutrient', 'யூரியா', 'npk', 'potash'])
+    is_risk = any(k in q_lower for k in ['risk', 'ஆபத்து', 'precaution', 'முன்னெச்சரிக்கை', 'disease', 'நோய்', 'பூச்சி', 'pest'])
+    is_price = any(k in q_lower for k in ['price', 'விலை', 'market', 'சந்தை', 'profit', 'லாபம்', 'cost', 'quintel'])
+
+    if is_tamil:
+        header = "📌 [விதிமுறை அடிப்படையிலான விவசாய வழிகாட்டல் — Gemini AI கிடைக்காததால் கணக்கிடப்பட்ட தரவு]:\n\n"
+        if is_fert and fert_text:
+            body = (
+                f"🌱 **{crop_name} பயிருக்கான உர மேலாண்மை:**\n"
+                f"• {fert_text}\n"
+                f"• மண்ணின் கார-அமிலத்தன்மை (pH): {ph}. உரங்களை தேவையான இடைவெளியில் பிரித்து இடவும்."
+            )
+        elif is_risk and risk_text:
+            body = (
+                f"⚠️ **{crop_name} சாகுபடி அபாயங்கள் & முன்னெச்சரிக்கைகள்:**\n"
+                f"• {risk_text}\n"
+                f"• தற்போதைய காலநிலை: வெப்பநிலை {temp}°C, மழை அளவு {rain}mm. வடிகால் வசதி மற்றும் பயிர் பாதுகாப்பில் கவனம் செலுத்தவும்."
+            )
+        elif is_price and price_curr.get('min'):
+            body = (
+                f"💰 **{crop_name} சந்தை விலை கணிப்பு:**\n"
+                f"• தற்போதைய உத்தேச சந்தை விலை: ₹{price_curr.get('min')} - ₹{price_curr.get('max')} / குவிண்டால்.\n"
+                f"• அறுவடை கால எதிர்பார்க்கப்படும் விலை: ₹{price_harv.get('min')} - ₹{price_harv.get('max')} / குவிண்டால்.\n"
+                f"• தரமான அறுவடை மற்றும் நேரடி சந்தைப்படுத்தல் மூலம் நல்ல லாபம் ஈட்டலாம்."
+            )
+        else:
+            water_desc = "பாசன வசதி கட்டாயம் தேவை" if water_req == 'irrigationRequired' else "மானாவாரி சாகுபடி சாத்தியம்"
+            body = (
+                f"🌾 **{crop_name} ஏன் பரிந்துரைக்கப்படுகிறது?**\n"
+                f"• உங்கள் மண்ணின் கார-அமிலத்தன்மை (pH {ph}) மற்றும் காலநிலை ({temp}°C வெப்பநிலை, {rain}mm மழை) அடிப்படையில் இயந்திர கற்றல் மாதிரி (ML Model) {confidence}% நம்பிக்கையுடன் {crop_name} பயிரை பரிந்துரைத்துள்ளது.\n"
+                f"• நீர் தேவை: {water_desc}.\n"
+                f"• உர பரிந்துரை: {fert_text}\n"
+                f"• பாதுகாப்பு குறிப்பு: {risk_text}"
+            )
+    else:
+        header = "📌 [Rule-Based Advisory — Grounded in verified recommendation data while Gemini AI is unavailable]:\n\n"
+        if is_fert and fert_text:
+            body = (
+                f"🌱 **Fertilizer Guidance for {crop_name}:**\n"
+                f"• {fert_text}\n"
+                f"• Soil pH Assessment: {ph}. Apply balanced nutrients in split doses to optimize uptake and prevent leaching."
+            )
+        elif is_risk and risk_text:
+            body = (
+                f"⚠️ **Risk Factors & Mitigation for {crop_name}:**\n"
+                f"• {risk_text}\n"
+                f"• Weather Context: {temp}°C temperature, {rain}mm rainfall. Ensure proper field drainage and regular pest monitoring."
+            )
+        elif is_price and price_curr.get('min'):
+            body = (
+                f"💰 **Market Price Outlook for {crop_name}:**\n"
+                f"• Current Estimated Market Price: ₹{price_curr.get('min')} - ₹{price_curr.get('max')} per quintal.\n"
+                f"• Expected Harvest Market Price: ₹{price_harv.get('min')} - ₹{price_harv.get('max')} per quintal.\n"
+                f"• Pre-sorting by grade can help maximize net realization."
+            )
+        else:
+            water_desc = "Irrigation required" if water_req == 'irrigationRequired' else "Rainfed cultivation possible"
+            body = (
+                f"🌾 **Why {crop_name} is recommended:**\n"
+                f"• Based on your soil test (pH {ph}) and climate conditions ({temp}°C, {rain}mm rainfall), our machine learning model recommended {crop_name} with {confidence}% confidence.\n"
+                f"• Water Requirement: {water_desc}.\n"
+                f"• Fertilizer Plan: {fert_text}\n"
+                f"• Precautionary Note: {risk_text}"
+            )
+
+    return header + body
+
+@app.route('/chat', methods=['GET', 'POST', 'OPTIONS'])
+@app.route('/chat/', methods=['GET', 'POST', 'OPTIONS'])
 def chat():
-    gemini_client = get_gemini_client()
-    if not gemini_client:
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        return '', 204
+
+    # Handle health / probe GET request
+    if request.method == 'GET':
         return jsonify({
-            'error': 'Gemini API key is missing. Please set GEMINI_API_KEY in backend/.env'
-        }), 503
+            'status': 'CropSmart AI chat service is operational.',
+            'message': 'Send a POST request with JSON payload containing query, recommendation, and language.'
+        }), 200
+
+    data = request.get_json(silent=True) or {}
+    query = str(data.get('query', '')).strip()
+    if not query:
+        return jsonify({'error': 'Query text cannot be empty.'}), 400
+
+    recommendation = data.get('recommendation', {})
+    language = data.get('language', 'en')
+    conversation_history = data.get('conversationHistory', [])
+
+    gemini_client = get_gemini_client()
+
+    # If Gemini client cannot be configured (missing, unconfigured, or placeholder key),
+    # return the deterministic, transparent rule-based advisory without crashing.
+    if not gemini_client:
+        print("[CHAT] Gemini client not configured. Generating rule-based agricultural fallback.")
+        fallback_text = generate_rule_based_fallback(query, recommendation, language)
+        return jsonify({
+            'response': fallback_text,
+            'is_fallback': True,
+            'fallback_reason': 'Gemini API key is unconfigured or invalid in backend/.env',
+            'model': 'rule-based-advisory'
+        }), 200
 
     try:
-        data = request.get_json(silent=True)
-        if not data:
-            return jsonify({'error': 'Invalid request body. Expected JSON.'}), 400
-
-        query = str(data.get('query', '')).strip()
-        if not query:
-            return jsonify({'error': 'Query text cannot be empty.'}), 400
-
-        recommendation = data.get('recommendation', {})
-        language = data.get('language', 'en')
-        conversation_history = data.get('conversationHistory', [])
-
         lang_instruction = (
             "Respond in Tamil (தமிழ்). Use simple, clear, conversational Tamil that farmers and agricultural advisors can understand easily."
             if language == 'ta'
@@ -144,11 +290,10 @@ CURRENT RECOMMENDATION DATA:
 
         # Candidate models in order of stability and availability
         models_to_try = [
-            'models/gemini-flash-latest',
             'gemini-2.0-flash',
+            'models/gemini-flash-latest',
             'gemini-2.5-flash',
-            'models/gemini-2.0-flash',
-            'models/gemini-2.5-flash-lite'
+            'gemini-1.5-flash'
         ]
 
         import time
@@ -163,57 +308,78 @@ CURRENT RECOMMENDATION DATA:
                         contents=prompt
                     )
                     if response and response.text:
+                        print(f"[CHAT] Gemini successfully answered via {model_name}")
                         return jsonify({
                             'response': response.text.strip(),
+                            'is_fallback': False,
                             'model': model_name
                         })
                 except Exception as model_err:
                     last_error = model_err
                     err_str = str(model_err)
-                    
-                    # Stop immediately if API key is invalid
+
+                    # If API key is invalid or unauthorized, break immediately without retrying credentials
                     if "API_KEY_INVALID" in err_str or "API key not valid" in err_str:
-                        print("Gemini API key is invalid.")
+                        print("[CHAT] Gemini API key is invalid. Switching to transparent rule-based advisory.")
+                        fallback_text = generate_rule_based_fallback(query, recommendation, language)
                         return jsonify({
-                            'error': 'Gemini API key is invalid. Please check your GEMINI_API_KEY in backend/.env'
-                        }), 401
-                    
-                    # If model not found (404), continue to next model in candidate list
+                            'response': fallback_text,
+                            'is_fallback': True,
+                            'fallback_reason': 'Gemini API key is invalid or unauthorized in backend/.env',
+                            'model': 'rule-based-advisory'
+                        }), 200
+
+                    # If model not found (404), try next model in candidate list
                     if "404" in err_str or "Not Found" in err_str:
                         continue
-                    
-                    # If rate limited (429), back off and retry
+
+                    # If rate limited (429), back off and retry once
                     if ("429" in err_str or "Resource has been exhausted" in err_str) and attempt < max_retries - 1:
                         sleep_time = 2 ** attempt
-                        print(f"Rate limited (429). Retrying in {sleep_time}s...")
+                        print(f"[CHAT] Rate limited (429). Retrying in {sleep_time}s...")
                         time.sleep(sleep_time)
                         break
-                    
+
                     continue
 
-        if last_error:
-            raise last_error
-
-        return jsonify({'error': 'No response generated by AI.'}), 500
+        # If all Gemini models failed (e.g. quota, timeout, network error),
+        # return the deterministic rule-based advisory transparently.
+        print(f"[CHAT] All Gemini attempts failed ({last_error}). Providing rule-based fallback advisory.")
+        fallback_text = generate_rule_based_fallback(query, recommendation, language)
+        return jsonify({
+            'response': fallback_text,
+            'is_fallback': True,
+            'fallback_reason': 'Gemini AI service is temporarily unavailable',
+            'model': 'rule-based-advisory'
+        }), 200
 
     except Exception as e:
-        error_msg = str(e)
-        print(f"Chat error: {error_msg}")
-        if "429" in error_msg or "Resource has been exhausted" in error_msg:
-            return jsonify({'error': 'AI quota exceeded. Please try again in a minute.'}), 429
-        if "API_KEY_INVALID" in error_msg or "API key not valid" in error_msg:
-            return jsonify({'error': 'Gemini API key is invalid. Please check your GEMINI_API_KEY in backend/.env'}), 401
-        if "404" in error_msg or "Not Found" in error_msg:
-            return jsonify({'error': 'AI Model is temporarily unavailable.'}), 503
-        return jsonify({'error': 'AI advisory service is temporarily unavailable. Please try again.'}), 500
+        print(f"[CHAT] Unexpected exception: {e}. Providing rule-based fallback advisory.")
+        fallback_text = generate_rule_based_fallback(query, recommendation, language)
+        return jsonify({
+            'response': fallback_text,
+            'is_fallback': True,
+            'fallback_reason': 'Unexpected AI service error',
+            'model': 'rule-based-advisory'
+        }), 200
 
-@app.route('/predict', methods=['POST'])
+@app.route('/predict', methods=['GET', 'POST', 'OPTIONS'])
+@app.route('/predict/', methods=['GET', 'POST', 'OPTIONS'])
 def predict():
+    if request.method == 'OPTIONS':
+        return '', 204
+
+    if request.method == 'GET':
+        return jsonify({
+            'status': 'CropSmart prediction service is operational.',
+            'message': 'Send a POST request with soil parameters.'
+        }), 200
+
     if not model or not scaler:
         return jsonify({'error': 'Model/Scaler not loaded'}), 500
 
     try:
-        data = request.json
+        data = request.get_json(silent=True) or {}
         
         # Extract features
         # Support both lowercase and title case keys just in case
@@ -274,4 +440,4 @@ def predict():
         return jsonify({'error': str(e)}), 400
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(debug=True, host='0.0.0.0', port=5000)

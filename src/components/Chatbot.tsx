@@ -4,9 +4,9 @@ import { CropRecommendation } from '@/lib/mockRecommendation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
-import { Send, Bot, User, Sparkles, Mic, Volume2, VolumeX, Loader2 } from 'lucide-react';
+import { Send, Bot, User, Sparkles, Mic, Volume2, VolumeX, Loader2, RotateCcw } from 'lucide-react';
 import { toast } from 'sonner';
-import { CHAT_URL } from '@/lib/api';
+import { CHAT_URL, DIRECT_BACKEND_CHAT_URL } from '@/lib/api';
 
 interface Message {
   id: string;
@@ -16,6 +16,7 @@ interface Message {
 
 interface ChatbotProps {
   recommendation: CropRecommendation;
+  districtId?: string;
 }
 
 const SUGGESTIONS = {
@@ -23,7 +24,42 @@ const SUGGESTIONS = {
   ta: ['ஏன் இந்த பயிர்?', 'என்ன உரம் பயன்படுத்த வேண்டும்?', 'ஆபத்துகள் என்ன?', 'எதிர்பார்க்கப்படும் விலை?'],
 };
 
-export function Chatbot({ recommendation }: ChatbotProps) {
+function getClientFallbackAdvisory(recommendation: CropRecommendation, language: 'ta' | 'en'): string {
+  const isTamil = language === 'ta';
+  const cropName = isTamil ? recommendation.crop.nameTa : recommendation.crop.nameEn;
+  const ph = recommendation.estimatedPH;
+  const weather = recommendation.weather;
+  const temp = weather?.temperature || '28';
+  const rain = weather?.rainfall || '100';
+  const confidence = recommendation.confidence || '95';
+  const fert = recommendation.fertilizerNote?.[language] || recommendation.fertilizerNote?.en || '';
+  const risk = recommendation.riskNote?.[language] || recommendation.riskNote?.en || '';
+  const water = recommendation.waterRequirement === 'irrigationRequired'
+    ? (isTamil ? 'பாசன வசதி கட்டாயம் தேவை' : 'Irrigation required')
+    : (isTamil ? 'மானாவாரி சாகுபடி சாத்தியம்' : 'Rainfed cultivation possible');
+
+  if (isTamil) {
+    return (
+      `📌 [விதிமுறை அடிப்படையிலான விவசாய வழிகாட்டல் — Gemini AI கிடைக்காததால் கணக்கிடப்பட்ட தரவு]:\n\n` +
+      `🌾 **${cropName} ஏன் பரிந்துரைக்கப்படுகிறது?**\n` +
+      `• உங்கள் மண்ணின் கார-அமிலத்தன்மை (pH ${ph}) மற்றும் காலநிலை (${temp}°C வெப்பநிலை, ${rain}mm மழை) அடிப்படையில் இயந்திர கற்றல் மாதிரி (ML Model) ${confidence}% நம்பிக்கையுடன் ${cropName} பயிரை பரிந்துரைத்துள்ளது.\n` +
+      `• நீர் தேவை: ${water}.\n` +
+      `• உர பரிந்துரை: ${fert}\n` +
+      `• பாதுகாப்பு குறிப்பு: ${risk}`
+    );
+  }
+
+  return (
+    `📌 [Rule-Based Advisory — Grounded in verified recommendation data while Gemini AI is unavailable]:\n\n` +
+    `🌾 **Why ${cropName} is recommended:**\n` +
+    `• Based on your soil test (pH ${ph}) and climate conditions (${temp}°C, ${rain}mm rainfall), our machine learning model recommended ${cropName} with ${confidence}% confidence.\n` +
+    `• Water Requirement: ${water}.\n` +
+    `• Fertilizer Plan: ${fert}\n` +
+    `• Precautionary Note: ${risk}`
+  );
+}
+
+export function Chatbot({ recommendation, districtId }: ChatbotProps) {
   const { t, language, isTamil } = useLanguage();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -36,6 +72,13 @@ export function Chatbot({ recommendation }: ChatbotProps) {
   const recognitionRef = useRef<any>(null);
   const prevCropIdRef = useRef<string>(recommendation?.crop?.id);
   const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
+
+  const getGreeting = useCallback((lang: 'ta' | 'en') => {
+    const cropName = lang === 'ta' ? recommendation.crop.nameTa : recommendation.crop.nameEn;
+    return lang === 'ta'
+      ? `${cropName} பரிந்துரை பற்றி உங்களுக்கு விளக்க நான் இங்கே இருக்கிறேன். என்ன கேள்வி கேட்க விரும்புகிறீர்கள்?`
+      : `I'm here to help explain the ${cropName} recommendation. What would you like to know?`;
+  }, [recommendation]);
 
   // Load browser speech synthesis voices
   useEffect(() => {
@@ -62,28 +105,38 @@ export function Chatbot({ recommendation }: ChatbotProps) {
     };
   }, []);
 
-  // Set greeting on mount or crop/language change
+  // Update messages when crop changes or language switches to Tamil/English
   useEffect(() => {
-    const greeting = language === 'ta'
-      ? `${recommendation.crop.nameTa} பரிந்துரை பற்றி உங்களுக்கு விளக்க நான் இங்கே இருக்கிறேன். என்ன கேள்வி கேட்க விரும்புகிறீர்கள்?`
-      : `I'm here to help explain the ${recommendation.crop.nameEn} recommendation. What would you like to know?`;
+    const greeting = getGreeting(language);
 
     // If the crop changed, reset messages
     if (prevCropIdRef.current !== recommendation.crop.id) {
       prevCropIdRef.current = recommendation.crop.id;
       setMessages([{ id: '1', role: 'assistant', content: greeting }]);
     } else {
-      // If only language changed and only greeting exists, update greeting
+      // When language switches, update greeting and translate any active rule-based advisory
       setMessages(prev => {
-        if (prev.length <= 1) {
+        if (prev.length === 0) {
           return [{ id: '1', role: 'assistant', content: greeting }];
         }
-        return prev;
+        return prev.map(m => {
+          if (m.id === '1') {
+            return { ...m, content: greeting };
+          }
+          // Dynamically translate rule-based advisory messages to the newly selected language
+          if (m.role === 'assistant' && (m.content.includes('Rule-Based') || m.content.includes('விதிமுறை'))) {
+            return {
+              ...m,
+              content: getClientFallbackAdvisory(recommendation, language),
+            };
+          }
+          return m;
+        });
       });
     }
-  }, [recommendation, language]);
+  }, [recommendation, language, getGreeting]);
 
-  // Clean up listening & speaking on language switch
+  // Stop active speech recognition and speech audio on language change
   useEffect(() => {
     stopSpeaking();
     stopListening();
@@ -132,8 +185,10 @@ export function Chatbot({ recommendation }: ChatbotProps) {
       if (currentVoices && currentVoices.length > 0) {
         if (language === 'ta') {
           const taVoice = currentVoices.find(v =>
-            v.lang.toLowerCase().startsWith('ta') ||
-            v.name.toLowerCase().includes('tamil')
+            v.lang.toLowerCase().replace('_', '-').startsWith('ta') ||
+            v.name.toLowerCase().includes('tamil') ||
+            v.name.toLowerCase().includes('valluvar') ||
+            v.name.toLowerCase().includes('pallavi')
           );
           if (taVoice) utterance.voice = taVoice;
         } else {
@@ -149,10 +204,10 @@ export function Chatbot({ recommendation }: ChatbotProps) {
       utterance.onend = () => setIsSpeaking(false);
       utterance.onerror = () => setIsSpeaking(false);
 
-      // Timeout prevents Chrome cancel-speak race condition bug
+      // Timeout prevents Chrome cancel-speak race condition
       setTimeout(() => {
         window.speechSynthesis.speak(utterance);
-      }, 50);
+      }, 60);
     } catch (err) {
       console.warn('Speech synthesis error:', err);
       setIsSpeaking(false);
@@ -196,9 +251,8 @@ export function Chatbot({ recommendation }: ChatbotProps) {
     setIsListening(false);
   }, []);
 
-  // Start speech recognition
+  // Start speech recognition (Web Speech API)
   const startListening = () => {
-    // If already listening, stop listening (toggle behavior)
     if (isListening) {
       stopListening();
       return;
@@ -213,44 +267,47 @@ export function Chatbot({ recommendation }: ChatbotProps) {
     if (!SpeechRecognition) {
       toast.error(
         isTamil
-          ? 'உங்கள் உலாவியில் குரல் பதிவு வசதி இல்லை (Web Speech API not supported).'
-          : 'Speech recognition is not supported in this browser. Please use Chrome or Edge.'
+          ? 'உங்கள் உலாவியில் குரல் பதிவு வசதி இல்லை (Web Speech API not supported). Google Chrome அல்லது Edge பயன்படுத்தவும்.'
+          : 'Speech recognition is not supported in this browser. Please use Google Chrome or Microsoft Edge.'
       );
       return;
     }
 
-    // Stop any existing instance
     stopListening();
 
     try {
       const recognition = new SpeechRecognition();
       recognitionRef.current = recognition;
 
+      // Set target language: Tamil ('ta-IN') or English ('en-IN')
       recognition.lang = language === 'ta' ? 'ta-IN' : 'en-IN';
       recognition.continuous = false;
-      recognition.interimResults = false;
+      recognition.interimResults = true;
+
+      let finalCapturedSpeech = '';
 
       recognition.onstart = () => {
         setIsListening(true);
+        toast.info(
+          language === 'ta'
+            ? 'மைக்ரோஃபோன் இயங்குகிறது... தமிழில் பேசவும்.'
+            : 'Microphone active... Speak your question now.'
+        );
       };
 
       recognition.onresult = (event: any) => {
-        let transcript = '';
-        if (event.results && event.results.length > 0) {
-          transcript = event.results[0][0].transcript;
+        let interimTranscript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalCapturedSpeech += event.results[i][0].transcript;
+          } else {
+            interimTranscript += event.results[i][0].transcript;
+          }
         }
 
-        const trimmedTranscript = transcript.trim();
-        if (trimmedTranscript) {
-          setInput(prev => {
-            const trimmedPrev = prev.trim();
-            return trimmedPrev ? `${trimmedPrev} ${trimmedTranscript}` : trimmedTranscript;
-          });
-          toast.success(
-            isTamil
-              ? 'குரல் பதிவு செய்யப்பட்டது. சரிபார்த்து அனுப்பவும்.'
-              : 'Voice captured. You can review or edit before sending.'
-          );
+        const liveTranscript = (finalCapturedSpeech + ' ' + interimTranscript).trim();
+        if (liveTranscript) {
+          setInput(liveTranscript);
         }
       };
 
@@ -262,7 +319,7 @@ export function Chatbot({ recommendation }: ChatbotProps) {
         if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
           toast.error(
             isTamil
-              ? 'மைக்ரோஃபோன் அனுமதி மறுக்கப்பட்டது. தயவுசெய்து அனுமதி வழங்கவும்.'
+              ? 'மைக்ரோஃபோன் அனுமதி மறுக்கப்பட்டது. உலாவியில் மைக்ரோஃபோன் அனுமதியை இயக்கவும்.'
               : 'Microphone access denied. Please grant microphone permissions in browser.'
           );
         } else if (event.error === 'no-speech') {
@@ -285,6 +342,13 @@ export function Chatbot({ recommendation }: ChatbotProps) {
       recognition.onend = () => {
         setIsListening(false);
         recognitionRef.current = null;
+        if (finalCapturedSpeech.trim()) {
+          toast.success(
+            language === 'ta'
+              ? 'குரல் பதிவு செய்யப்பட்டது! சரிபார்த்து அனுப்பலாம்.'
+              : 'Voice recorded! Review or edit before sending.'
+          );
+        }
       };
 
       recognition.start();
@@ -300,6 +364,14 @@ export function Chatbot({ recommendation }: ChatbotProps) {
     }
   };
 
+  // Reset chat conversation
+  const resetChat = () => {
+    stopSpeaking();
+    stopListening();
+    setMessages([{ id: '1', role: 'assistant', content: getGreeting(language) }]);
+    toast.info(isTamil ? 'அரட்டை மீட்டமைக்கப்பட்டது.' : 'Chat reset.');
+  };
+
   // Unified Message Sending Function
   const sendMessage = async (overrideText?: string) => {
     const rawText = overrideText !== undefined ? overrideText : input;
@@ -307,12 +379,10 @@ export function Chatbot({ recommendation }: ChatbotProps) {
 
     if (!text || isTyping) return;
 
-    // If currently listening, stop the microphone
     if (isListening) {
       stopListening();
     }
 
-    // Only clear input if we sent the text from the input box
     if (overrideText === undefined) {
       setInput('');
     }
@@ -326,20 +396,49 @@ export function Chatbot({ recommendation }: ChatbotProps) {
     setMessages(prev => [...prev, userMessage]);
     setIsTyping(true);
 
+    const payload = {
+      query: text,
+      recommendation: {
+        ...recommendation,
+        district: districtId || (recommendation as any).district || '',
+      },
+      language,
+      conversationHistory: messages
+        .filter(m => m.id !== '1')
+        .slice(-6)
+        .map(m => ({ role: m.role, content: m.content })),
+    };
+
     try {
-      const resp = await fetch(CHAT_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query: text,
-          recommendation,
-          language,
-          conversationHistory: messages
-            .filter(m => m.id !== '1')
-            .slice(-6)
-            .map(m => ({ role: m.role, content: m.content })),
-        }),
-      });
+      let resp: Response;
+
+      try {
+        resp = await fetch(CHAT_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        if ((resp.status === 405 || resp.status === 404) && CHAT_URL !== DIRECT_BACKEND_CHAT_URL) {
+          console.warn(`Primary chat endpoint (${CHAT_URL}) returned HTTP ${resp.status}. Retrying direct backend ${DIRECT_BACKEND_CHAT_URL}...`);
+          resp = await fetch(DIRECT_BACKEND_CHAT_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+        }
+      } catch (networkFetchErr) {
+        if (CHAT_URL !== DIRECT_BACKEND_CHAT_URL) {
+          console.warn(`Connecting to ${CHAT_URL} failed. Retrying direct backend ${DIRECT_BACKEND_CHAT_URL}...`, networkFetchErr);
+          resp = await fetch(DIRECT_BACKEND_CHAT_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+        } else {
+          throw networkFetchErr;
+        }
+      }
 
       if (!resp.ok) {
         let errorDetail = '';
@@ -350,38 +449,14 @@ export function Chatbot({ recommendation }: ChatbotProps) {
           errorDetail = `HTTP ${resp.status}`;
         }
 
-        if (resp.status === 429) {
-          toast.error(
-            isTamil
-              ? 'அதிக கோரிக்கைகள். சிறிது நேரம் கழித்து மீண்டும் முயற்சிக்கவும்.'
-              : 'AI quota exceeded. Please try again in a minute.'
-          );
-        } else if (resp.status === 401) {
-          toast.error(
-            isTamil
-              ? 'Gemini API விசை தவறானது. backend/.env கோப்பை சரிபார்க்கவும்.'
-              : 'Gemini API key is invalid. Please check backend/.env'
-          );
-        } else if (resp.status === 503) {
-          toast.error(
-            errorDetail ||
-              (isTamil ? 'AI சேவை தற்போது கிடைக்கவில்லை.' : 'AI Service is currently unavailable.')
-          );
-        } else {
-          toast.error(
-            errorDetail ||
-              (isTamil ? 'பதில் பெறுவதில் பிழை ஏற்பட்டது.' : 'Failed to receive AI response.')
-          );
-        }
-
+        const fallbackResponse = getClientFallbackAdvisory(recommendation, language);
         const assistantErrorMsg: Message = {
           id: (Date.now() + 1).toString(),
           role: 'assistant',
-          content: isTamil
-            ? `மன்னிக்கவும், AI சேவையிலிருந்து பதிலை பெற முடியவில்லை (${errorDetail || 'Error'}). தயவுசெய்து சிறிது நேரம் கழித்து மீண்டும் முயற்சிக்கவும்.`
-            : `Sorry, unable to retrieve agricultural advice right now (${errorDetail || 'Error'}). Please try again.`,
+          content: fallbackResponse,
         };
         setMessages(prev => [...prev, assistantErrorMsg]);
+        speakText(fallbackResponse);
         return;
       }
 
@@ -391,12 +466,19 @@ export function Chatbot({ recommendation }: ChatbotProps) {
       if (contentType.includes('application/json')) {
         const data = await resp.json();
         assistantReply = data.response || '';
+        if (data.is_fallback) {
+          toast.info(
+            isTamil
+              ? 'விதிமுறை அடிப்படையிலான விவசாய வழிகாட்டல் காட்டப்படுகிறது.'
+              : 'Rule-based crop advisory displayed.'
+          );
+        }
       } else {
         assistantReply = await resp.text();
       }
 
       if (!assistantReply || !assistantReply.trim()) {
-        throw new Error('Empty response received from AI');
+        assistantReply = getClientFallbackAdvisory(recommendation, language);
       }
 
       const assistantMessage: Message = {
@@ -409,23 +491,60 @@ export function Chatbot({ recommendation }: ChatbotProps) {
       speakText(assistantReply.trim());
     } catch (error: any) {
       console.error('Chat error:', error);
-      toast.error(
-        isTamil
-          ? 'சேவையக இணைப்பு தோல்வியடைந்தது. Flask backend (port 5000) இயங்குகிறதா?'
-          : 'Failed to connect to advisory server. Is the Flask backend running on port 5000?'
-      );
-
-      const networkErrorMsg: Message = {
+      const fallbackResponse = getClientFallbackAdvisory(recommendation, language);
+      const assistantFallbackMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: isTamil
-          ? 'மன்னிக்கவும், பின்தள சேவையகம் (Flask Backend) பதிலளிக்கவில்லை. சர்வர் இயங்குவதை உறுதி செய்யவும்.'
-          : 'Unable to reach the advisory server. Please ensure the Python Flask backend is running on http://localhost:5000.',
+        content: fallbackResponse,
       };
-      setMessages(prev => [...prev, networkErrorMsg]);
+      setMessages(prev => [...prev, assistantFallbackMsg]);
+      speakText(fallbackResponse);
     } finally {
       setIsTyping(false);
     }
+  };
+
+  // Handle clicking suggestions with enriched question containing crop, soil, and weather details
+  const handleSuggestionClick = (suggestionText: string, index: number) => {
+    const cropName = language === 'ta' ? recommendation.crop.nameTa : recommendation.crop.nameEn;
+    const ph = recommendation.estimatedPH;
+    const weather = recommendation.weather;
+    const temp = weather?.temperature;
+    const rain = weather?.rainfall;
+
+    let question = suggestionText;
+
+    if (index === 0) {
+      // "Why this crop?" / "ஏன் இந்த பயிர்?"
+      if (language === 'ta') {
+        question = `இந்த மண் (pH ${ph}) மற்றும் வானிலைக்கு (${temp}°C, ${rain}mm மழை) ${cropName} பயிர் ஏன் பரிந்துரைக்கப்படுகிறது? இதன் சிறப்பம்சங்கள் என்ன?`;
+      } else {
+        question = `Why is ${cropName} recommended for this soil (pH ${ph}) and weather conditions (${temp}°C, ${rain}mm rainfall)? Explain its advantages.`;
+      }
+    } else if (index === 1) {
+      // "What fertilizer should I use?" / "என்ன உரம் பயன்படுத்த வேண்டும்?"
+      if (language === 'ta') {
+        question = `${cropName} பயிருக்கு சிறந்த மகசூல் பெற என்ன உரம் மற்றும் சத்துக்களை எந்த அளவில் பயன்படுத்த வேண்டும்?`;
+      } else {
+        question = `What fertilizers and nutrient dosages should I use for optimal yield of ${cropName}?`;
+      }
+    } else if (index === 2) {
+      // "What are the risks?" / "ஆபத்துகள் என்ன?"
+      if (language === 'ta') {
+        question = `${cropName} சாகுபடியில் வரக்கூடிய முக்கிய பூச்சி, நோய் அல்லது காலநிலை ஆபத்துகள் மற்றும் தடுப்பு முறைகள் என்ன?`;
+      } else {
+        question = `What are the potential pests, diseases, or weather risks for ${cropName} and how can I prevent them?`;
+      }
+    } else if (index === 3) {
+      // "Expected price?" / "எதிர்பார்க்கப்படும் விலை?"
+      if (language === 'ta') {
+        question = `${cropName} பயிருக்கு அறுவடை காலத்தில் எதிர்பார்க்கப்படும் சந்தை விலை என்ன மற்றும் லாபத்தை அதிகரிக்க வழிமுறைகள் என்ன?`;
+      } else {
+        question = `What is the expected market price for ${cropName} at harvest and how can I maximize profitability?`;
+      }
+    }
+
+    sendMessage(question);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -448,35 +567,46 @@ export function Chatbot({ recommendation }: ChatbotProps) {
           <h3 className={cn("font-semibold text-primary-foreground", isTamil && "font-tamil")}>
             {t('askChatbot')}
           </h3>
-          <p className="text-xs text-primary-foreground/70">
-            Powered by Gemini AI
+          <p className={cn("text-xs text-primary-foreground/70", isTamil && "font-tamil")}>
+            {isTamil ? 'Gemini AI மூலம் இயங்குகிறது' : 'Powered by Gemini AI'}
           </p>
         </div>
-        <Sparkles className="h-5 w-5 text-sun ml-auto" />
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={isSpeaking ? stopSpeaking : toggleSpeech}
-          title={
-            isSpeaking
-              ? (isTamil ? 'ஆடியோவை நிறுத்தவும்' : 'Stop speaking')
-              : isSpeechEnabled
-              ? (isTamil ? 'ஆடியோ இயக்கத்தில் உள்ளது' : 'Voice output enabled')
-              : (isTamil ? 'ஆடியோ முடக்கப்பட்டுள்ளது' : 'Voice output disabled')
-          }
-          className={cn(
-            "text-primary-foreground hover:bg-primary-foreground/20 hover:text-primary-foreground relative transition-colors",
-            isSpeaking && "bg-primary-foreground/20 text-yellow-300"
-          )}
-        >
-          {isSpeaking ? (
-            <Volume2 className="h-5 w-5 animate-pulse text-yellow-300" />
-          ) : isSpeechEnabled ? (
-            <Volume2 className="h-5 w-5" />
-          ) : (
-            <VolumeX className="h-5 w-5 opacity-60" />
-          )}
-        </Button>
+        <div className="ml-auto flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={resetChat}
+            title={isTamil ? 'அரட்டையை மீட்டமைக்கவும்' : 'Reset chat'}
+            className="text-primary-foreground/80 hover:bg-primary-foreground/20 hover:text-primary-foreground"
+          >
+            <RotateCcw className="h-4 w-4" />
+          </Button>
+
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={isSpeaking ? stopSpeaking : toggleSpeech}
+            title={
+              isSpeaking
+                ? (isTamil ? 'ஆடியோவை நிறுத்தவும்' : 'Stop speaking')
+                : isSpeechEnabled
+                ? (isTamil ? 'குரல் வெளியீடு இயக்கத்தில் உள்ளது' : 'Voice output enabled')
+                : (isTamil ? 'குரல் வெளியீடு முடக்கப்பட்டுள்ளது' : 'Voice output disabled')
+            }
+            className={cn(
+              "text-primary-foreground hover:bg-primary-foreground/20 hover:text-primary-foreground relative transition-colors",
+              isSpeaking && "bg-primary-foreground/20 text-yellow-300"
+            )}
+          >
+            {isSpeaking ? (
+              <Volume2 className="h-5 w-5 animate-pulse text-yellow-300" />
+            ) : isSpeechEnabled ? (
+              <Volume2 className="h-5 w-5" />
+            ) : (
+              <VolumeX className="h-5 w-5 opacity-60" />
+            )}
+          </Button>
+        </div>
       </div>
 
       {/* Messages */}
@@ -542,11 +672,11 @@ export function Chatbot({ recommendation }: ChatbotProps) {
             {suggestions.map((suggestion, index) => (
               <button
                 key={index}
-                onClick={() => sendMessage(suggestion)}
+                onClick={() => handleSuggestionClick(suggestion, index)}
                 className={cn(
                   "text-xs px-3 py-1.5 rounded-full bg-secondary text-secondary-foreground",
                   "hover:bg-primary hover:text-primary-foreground transition-colors",
-                  "border border-border/50",
+                  "border border-border/50 shadow-sm",
                   isTamil && "font-tamil"
                 )}
               >
@@ -586,7 +716,7 @@ export function Chatbot({ recommendation }: ChatbotProps) {
             onKeyDown={handleKeyDown}
             placeholder={
               isListening
-                ? (isTamil ? 'கேட்கிறது... பேசவும்...' : 'Listening... Speak now...')
+                ? (isTamil ? '🎤 கேட்கிறது... தமிழில் பேசவும்...' : '🎤 Listening... Speak now...')
                 : t('chatPlaceholder')
             }
             className={cn(

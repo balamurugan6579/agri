@@ -124,7 +124,10 @@ export function AnalysisPage({ onBack }: AnalysisPageProps) {
 
             {/* Right Column - Chatbot */}
             <div>
-              <Chatbot recommendation={recommendations[0]} />
+              <Chatbot
+                recommendation={recommendations[0]}
+                districtId={lastInput?.district}
+              />
             </div>
           </div>
         )
